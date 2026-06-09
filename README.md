@@ -67,6 +67,31 @@ The year is automatically mapped to the correct Wikipedia article title:
 
 The formula is `ceremony number = year − 1983`.
 
+#### Validation
+
+After fetching the article, the tool checks that it actually covers the expected year. If the formula is wrong (e.g. because a ceremony was skipped or renumbered), you will see an error like:
+
+```
+[!] Error: The Wikipedia article '44th AVN Awards' does not appear to cover 2027.
+    This can happen when ceremonies were skipped or renumbered.
+    Please find the correct article URL and re-run with:
+      --update 2027 --update-url <wikipedia-url>
+```
+
+Pass `--update-url` with the correct Wikipedia page URL to override the auto-computed title:
+
+```bash
+python awardsparser.py \
+  --nominees https://avn.com/awards/2027_nominees \
+  --update   2027 \
+  --update-url https://en.wikipedia.org/wiki/44th_AVN_Awards \
+  --output   output.wiki
+```
+
+#### How wikilinks are applied
+
+Links are read **verbatim from the existing Wikipedia article** — the tool never guesses or invents link targets. If an editor wrote `[[Tommy Pistol]]`, that exact markup is used. If they wrote `[[Tommy Pistol (actor)|Tommy Pistol]]`, that is used instead. Matching is strict: `"Digital Playground/Pulse"` will **not** pick up a `[[Digital Playground]]` link.
+
 ## Output format
 
 The tool produces a Wikipedia wikitable with two award categories per row. Each cell contains the `{{Award category}}` template header followed by a bullet list — winner in bold, nominees indented below.
@@ -91,5 +116,6 @@ The tool produces a Wikipedia wikitable with two award categories per row. Each 
 | `--nominees URL` | URL of the AVN nominees page |
 | `--winners URL` | URL of the AVN winners announcement page |
 | `--update YEAR` | Fetch the existing Wikipedia article for this year and preserve its `[[wikilinks]]` |
+| `--update-url URL` | Override the auto-computed Wikipedia URL for `--update` (use when the ceremony was skipped or renumbered) |
 | `--output FILE` / `-o FILE` | Write output to a file instead of stdout |
 | `--show NAME` | Award show name (default: `AVN Awards`) |

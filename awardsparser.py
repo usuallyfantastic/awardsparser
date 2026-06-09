@@ -463,27 +463,61 @@ def fetch_wikipedia_wikitext(title: str) -> str:
     return page["revisions"][0]["slots"]["main"]["*"]
 
 
+def _title_from_wikipedia_url(url: str) -> str:
+    """Extract the article title from a Wikipedia URL."""
+    # e.g. https://en.wikipedia.org/wiki/43rd_AVN_Awards → '43rd AVN Awards'
+    match = re.search(r'/wiki/([^#?]+)', url)
+    if not match:
+        raise ValueError(f"Could not parse Wikipedia article title from URL: {url}")
+    return urllib.parse.unquote(match.group(1)).replace("_", " ")
+
+
+def validate_wikipedia_article(wikitext: str, year: int, title: str) -> None:
+    """
+    Verify that the fetched article actually covers the expected ceremony year.
+    Raises SystemExit with a helpful message if the year is not found.
+    """
+    if str(year) not in wikitext:
+        print(
+            f"\n[!] Error: The Wikipedia article '{title}' does not appear to cover {year}.\n"
+            f"    This can happen when ceremonies were skipped or renumbered.\n"
+            f"    Please find the correct article URL and re-run with:\n"
+            f"      --update {year} --update-url <wikipedia-url>\n",
+            file=sys.stderr,
+        )
+        sys.exit(1)
+
+
 def extract_wikilinks(wikitext: str) -> dict[str, str]:
     """
-    Return a dict mapping normalized display text → full wikilink markup.
+    Return a dict mapping normalised display text → full wikilink markup,
+    reading the *actual link target* from each [[…]] in the existing article.
 
-    For [[Article]]          →  key=normalize("Article"),  value="[[Article]]"
-    For [[Article|Display]]  →  key=normalize("Display"),  value="[[Article|Display]]"
+    [[Article]]           → key=normalise("Article"),  value="[[Article]]"
+    [[Article|Display]]   → key=normalise("Display"),  value="[[Article|Display]]"
 
-    Only links whose display text looks like a person/title name are kept
-    (skip File:, Category:, Template: etc.).
+    We never guess or invent link targets — every entry here came verbatim
+    from the existing Wikipedia page, so if an editor wrote [[Tommy Pistol]]
+    we use exactly that; if they wrote [[Tommy Pistol (actor)|Tommy Pistol]]
+    we use that instead.  Matching is strict exact-normalised-key only
+    (no substring), so "Digital Playground/Pulse" will NOT pick up a link
+    for "Digital Playground".
+
+    Skips namespace links (File:, Category:, Template:, etc.).
     """
     links: dict[str, str] = {}
     for m in re.finditer(r'\[\[([^\[\]]+)\]\]', wikitext):
         inner = m.group(1)
-        if ":" in inner.split("|")[0]:   # skip File:, Category:, etc.
+        article_part = inner.split("|")[0].strip()
+        if ":" in article_part:          # skip File:, Category:, Template:, …
             continue
         parts = inner.split("|", 1)
-        article = parts[0].strip()
-        display = parts[1].strip() if len(parts) == 2 else article
+        display = parts[1].strip() if len(parts) == 2 else parts[0].strip()
         key = _normalize(display)
         if key:
-            links[key] = f"[[{inner}]]"
+            # If the same display text appears with different link targets,
+            # keep the first occurrence (mirrors what readers see).
+            links.setdefault(key, f"[[{inner}]]")
     return links
 
 
@@ -611,24 +645,59 @@ def main():
             "already present there in the generated output."
         ),
     )
+    parser.add_argument(
+        "--update-url", metavar="URL",
+        help=(
+            "Wikipedia URL of the existing article to use with --update, "
+            "overriding the auto-computed title. Use this if the ceremony "
+            "number formula is wrong (e.g. due to a skipped year)."
+        ),
+    )
     args = parser.parse_args()
 
     if not args.nominees and not args.winners:
         parser.error("At least one of --nominees or --winners is required.")
+
+    if args.update_url and not args.update:
+        parser.error("--update-url requires --update YEAR.")
 
     # ------------------------------------------------------------------
     # Optionally harvest existing wikilinks from the Wikipedia article
     # ------------------------------------------------------------------
     wikilinks: dict[str, str] = {}
     if args.update:
-        title = _avn_wikipedia_title(args.update)
+        # Resolve article title: prefer explicit URL, otherwise compute from year
+        if args.update_url:
+            title = _title_from_wikipedia_url(args.update_url)
+        else:
+            title = _avn_wikipedia_title(args.update)
+
         print(f"[*] Fetching existing Wikipedia article: '{title}'", file=sys.stderr)
         wikitext_existing = fetch_wikipedia_wikitext(title)
-        if wikitext_existing:
-            wikilinks = extract_wikilinks(wikitext_existing)
-            print(f"[*] Extracted {len(wikilinks)} wikilinks from existing article.", file=sys.stderr)
-        else:
-            print(f"[!] Article '{title}' not found on Wikipedia — skipping wikilink extraction.", file=sys.stderr)
+
+        if not wikitext_existing:
+            if args.update_url:
+                print(
+                    f"\n[!] Error: The Wikipedia article '{title}' was not found.\n"
+                    f"    Please check the URL and try again.\n",
+                    file=sys.stderr,
+                )
+            else:
+                print(
+                    f"\n[!] Error: Could not find Wikipedia article '{title}'.\n"
+                    f"    The ceremony number formula (year − 1983) may be incorrect\n"
+                    f"    for {args.update} (e.g. if a ceremony was skipped or renumbered).\n"
+                    f"    Find the correct article URL and re-run with:\n"
+                    f"      --update {args.update} --update-url <wikipedia-url>\n",
+                    file=sys.stderr,
+                )
+            sys.exit(1)
+
+        # Validate the article actually covers the expected year
+        validate_wikipedia_article(wikitext_existing, args.update, title)
+
+        wikilinks = extract_wikilinks(wikitext_existing)
+        print(f"[*] Extracted {len(wikilinks)} wikilinks from existing article.", file=sys.stderr)
 
     categories: list[Category] = []
 
