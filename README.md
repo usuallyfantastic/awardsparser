@@ -129,7 +129,7 @@ pip install -r requirements-dev.txt
 pytest tests/ -v
 ```
 
-The suite has 135 tests split across:
+The suite has 174 tests split across:
 
 - **`tests/unit/`** — isolated tests for every helper and parsing function (`_clean`, `_normalize`, `_parse_performer_and_title`, `_split_nominees_paragraph`, `_format_entry`, `generate_wikitext`, `extract_wikilinks`, etc.)
 - **`tests/integration/`** — full parse → merge → generate pipeline tests using local HTML fixtures; no network or browser required
