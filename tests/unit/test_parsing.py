@@ -52,9 +52,22 @@ class TestParsePerformerAndTitle:
         assert n.detail == '"Mr. Sicko and the Little Lady"'
 
     def test_title_only_no_performer(self):
-        # No text before the quote — title becomes the name
+        # No text before the quote — title is the primary name, rest is detail
         n = _parse_performer_and_title('"Midnight Movie" | Deeper/Pulse')
-        assert '"Midnight Movie"' in n.name
+        assert n.name == '"Midnight Movie"'
+        assert n.detail == "Deeper/Pulse"
+
+    def test_title_only_emdash_separator(self):
+        # Scene entry with em-dash between title and studio; performers
+        n = _parse_performer_and_title('"Great Scene" – Studio A; Alice, Bob')
+        assert n.name == '"Great Scene"'
+        assert n.detail == "Studio A; Alice, Bob"
+
+    def test_title_only_no_rest(self):
+        # Title with no trailing separator at all
+        n = _parse_performer_and_title('"Standalone Title"')
+        assert n.name == '"Standalone Title"'
+        assert n.detail == ""
 
     def test_pipe_separator(self):
         n = _parse_performer_and_title("Ghosted | Digital Playground/Pulse")

@@ -180,6 +180,31 @@ class TestGenerateWikitext:
         result = generate_wikitext(cats, wikilinks=links)
         assert "[[AVN Award for Best Supporting Actress|Best Supporting Actress]]" in result
 
+    def test_winner_uses_nominees_page_format(self):
+        # Winner from winners page has performers-first format.
+        # Nominees page has title-first format.
+        # generate_wikitext should output title-first for the winner too.
+        from awardsparser import _parse_performer_and_title, merge_winners
+        cats = [Category(
+            name="Best Group Scene",
+            nominees=[
+                _parse_performer_and_title('"Great Scene" – Studio A; Alice, Bob'),
+                _parse_performer_and_title('"Other Scene" – Studio B; Carol'),
+            ],
+        )]
+        winner_cats = [Category(
+            name="Best Group Scene",
+            nominees=[_parse_performer_and_title('Alice, Bob, "Great Scene," Studio A')],
+            winner=_parse_performer_and_title('Alice, Bob, "Great Scene," Studio A'),
+        )]
+        merge_winners(cats, winner_cats)
+        result = generate_wikitext(cats)
+        # Winner should be title-first, matching nominees format
+        winner_line = next(l for l in result.split('\n') if l.startswith('* '))
+        assert winner_line.startswith("* '''\"Great Scene\"'''")
+        # Non-winning nominee should also be title-first
+        assert '** "Other Scene"' in result
+
     def test_group_scene_winner_individual_links(self):
         # Multi-performer winner: each name should get its own wikilink
         cats = [Category(

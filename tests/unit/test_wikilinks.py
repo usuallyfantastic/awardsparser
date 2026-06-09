@@ -113,6 +113,19 @@ class TestApplyWikilink:
         links = {"alice": "[[Alice]]"}
         assert _apply_wikilink("Bob", links) == "Bob"
 
+    def test_semicolon_separates_studio_and_performers(self):
+        # Detail field "Studio; Performer1, Performer2" — each part linked individually
+        links = {
+            "elegantangel": "[[Elegant Angel]]",
+            "alice": "[[Alice]]",
+            "bob": "[[Bob]]",
+        }
+        result = _apply_wikilink("Elegant Angel; Alice, Bob & Carol", links)
+        assert "[[Elegant Angel]]" in result
+        assert "[[Alice]]" in result
+        assert "[[Bob]]" in result
+        assert "Carol" in result  # no link — preserved plain
+
 
 class TestValidateWikipediaArticle:
     def test_passes_when_year_present(self):

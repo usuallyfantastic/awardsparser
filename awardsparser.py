@@ -75,17 +75,25 @@ def _is_all_caps(text: str) -> bool:
 def _parse_performer_and_title(text: str) -> Nominee:
     """
     Split 'Performer(s), "Scene Title" | Studio' into Nominee(name, detail).
-    The title, if present, becomes the detail field.
+
+    Two cases:
+    a) Performers precede the title:  Nominee(name=performers, detail='"Title", rest')
+    b) Title starts the entry (scene categories): Nominee(name='"Title"', detail='Studio; Performers')
+       The title is the primary identifier — matching the nominees-page output format.
     """
     text = text.strip().lstrip(",").strip()
     # Quoted title pattern: everything before the opening quote → performers
     m = re.search(r'^(.*?),?\s*"(.+?)"(.*)$', text)
     if m:
         name_part = m.group(1).strip().strip(",").strip()
-        title_part = ('"' + m.group(2) + '"' + m.group(3)).strip()
         if name_part:
+            # Performers listed first — keep performers as name, title+rest as detail
+            title_part = ('"' + m.group(2) + '"' + m.group(3)).strip()
             return Nominee(name=name_part, detail=title_part)
-        return Nominee(name=title_part)
+        else:
+            # Title-first entry: title is the primary identifier, rest is detail
+            rest = re.sub(r'^[\s|–,\-]+', '', m.group(3)).strip()
+            return Nominee(name='"' + m.group(2) + '"', detail=rest)
     # No quoted title — split on separator (last resort: comma)
     for sep in (" | ", " – ", " - ", ", "):
         if sep in text:
@@ -563,14 +571,15 @@ def _apply_wikilink(text: str, wikilinks: dict[str, str]) -> str:
     key = _normalize(text)
     if key in wikilinks:
         return wikilinks[key]
-    # Multi-name fallback: split on ', ' or ' & ' and link each part separately.
-    if re.search(r',\s+|\s+&\s+', text):
-        parts = re.split(r'(,\s+|\s+&\s+)', text)
+    # Multi-name fallback: split on ', ', ' & ', or '; ' and link each part.
+    # '; ' separates studio from performers in scene-category detail fields.
+    if re.search(r',\s+|\s+&\s+|;\s+', text):
+        parts = re.split(r'(,\s+|\s+&\s+|;\s+)', text)
         result = []
         changed = False
         for part in parts:
             # Odd-indexed parts are the captured separators — keep as-is.
-            if re.fullmatch(r',\s+|\s+&\s+', part):
+            if re.fullmatch(r',\s+|\s+&\s+|;\s+', part):
                 result.append(part)
             else:
                 k = _normalize(part.strip())
@@ -658,7 +667,15 @@ def generate_wikitext(categories: list[Category], show_name: str = "AVN Awards",
                 # Category header and nominees list in the SAME cell
                 cell = f'| style="width:50%; vertical-align:top;" | {{{{Award category|{header_color}|{cat_name}}}}}\n'
                 if has_winners and cat.winner:
-                    winner_line = _format_entry(cat.winner, bold=True, wikilinks=wl)
+                    # Prefer the nominees-page version of the winner (title-first
+                    # format) over the winners-page version (performers-first) so
+                    # winner and non-winning nominees share the same ordering.
+                    winner_nom = next(
+                        (n for n in cat.nominees
+                         if _nominee_matches_winner(n, cat.winner)),
+                        cat.winner,
+                    )
+                    winner_line = _format_entry(winner_nom, bold=True, wikilinks=wl)
                     cell += f"* {winner_line}\n"
                     if has_nominees:
                         others = [n for n in cat.nominees
