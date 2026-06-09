@@ -167,6 +167,35 @@ class TestGenerateWikitext:
         result = generate_wikitext(cats, wikilinks=links)
         assert "[[Tommy Pistol]]" in result
 
+    def test_category_name_wikilink_applied(self):
+        # e.g. existing article uses [[AVN Award for Best Supporting Actress|Best Supporting Actress]]
+        # in the {{Award category}} template header
+        cats = [Category(
+            name="Best Supporting Actress",
+            nominees=[Nominee("Alice"), Nominee("Bob")],
+            winner=Nominee("Alice"),
+        )]
+        links = {"bestsupportingactress":
+                 "[[AVN Award for Best Supporting Actress|Best Supporting Actress]]"}
+        result = generate_wikitext(cats, wikilinks=links)
+        assert "[[AVN Award for Best Supporting Actress|Best Supporting Actress]]" in result
+
+    def test_group_scene_winner_individual_links(self):
+        # Multi-performer winner: each name should get its own wikilink
+        cats = [Category(
+            name="Best Group Scene",
+            nominees=[
+                Nominee("Alice, Bob & Carol", '"Great Scene", Studio'),
+                Nominee("Dave, Eve"),
+            ],
+            winner=Nominee("Alice, Bob & Carol", '"Great Scene", Studio'),
+        )]
+        links = {"alice": "[[Alice]]", "bob": "[[Bob (actor)|Bob]]"}
+        result = generate_wikitext(cats, wikilinks=links)
+        assert "[[Alice]]" in result
+        assert "[[Bob (actor)|Bob]]" in result
+        assert "Carol" in result  # unlinked name still present
+
     def test_odd_number_of_categories(self):
         cats = [
             Category(name="Cat A", nominees=[Nominee("X")]),

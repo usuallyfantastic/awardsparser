@@ -553,9 +553,34 @@ AVN_HEADER_COLOR = "#89cff0"
 
 
 def _apply_wikilink(text: str, wikilinks: dict[str, str]) -> str:
-    """Replace `text` with its wikilink markup if one exists in the lookup."""
+    """
+    Replace `text` with its wikilink markup if an exact normalised match exists.
+
+    For strings that contain ', ' or ' & ' separators (multi-performer entries
+    like "Alice, Bob & Carol"), also tries to apply links to each individual
+    name within the string so that group-scene entries get their links.
+    """
     key = _normalize(text)
-    return wikilinks[key] if key in wikilinks else text
+    if key in wikilinks:
+        return wikilinks[key]
+    # Multi-name fallback: split on ', ' or ' & ' and link each part separately.
+    if re.search(r',\s+|\s+&\s+', text):
+        parts = re.split(r'(,\s+|\s+&\s+)', text)
+        result = []
+        changed = False
+        for part in parts:
+            # Odd-indexed parts are the captured separators — keep as-is.
+            if re.fullmatch(r',\s+|\s+&\s+', part):
+                result.append(part)
+            else:
+                k = _normalize(part.strip())
+                linked = wikilinks.get(k, part)
+                if linked != part:
+                    changed = True
+                result.append(linked)
+        if changed:
+            return ''.join(result)
+    return text
 
 
 def _format_entry(n: Nominee, bold: bool = False,
@@ -629,7 +654,7 @@ def generate_wikitext(categories: list[Category], show_name: str = "AVN Awards",
         for i in range(0, len(cat_list), 2):
             lines.append("|-")
             for cat in cat_list[i:i + 2]:
-                cat_name = _wiki_escape(cat.name)
+                cat_name = _wiki_escape(_apply_wikilink(cat.name, wl))
                 # Category header and nominees list in the SAME cell
                 cell = f'| style="width:50%; vertical-align:top;" | {{{{Award category|{header_color}|{cat_name}}}}}\n'
                 if has_winners and cat.winner:

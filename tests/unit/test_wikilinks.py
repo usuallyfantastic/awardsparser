@@ -70,6 +70,49 @@ class TestApplyWikilink:
         links = {"digitalplayground": "[[Digital Playground]]"}
         assert _apply_wikilink("Digital Playground/Pulse", links) == "Digital Playground/Pulse"
 
+    # ------------------------------------------------------------------
+    # Multi-performer splitting (Fix: group scene entries)
+    # ------------------------------------------------------------------
+
+    def test_multi_performer_comma_separated(self):
+        links = {
+            "alice": "[[Alice]]",
+            "bob": "[[Bob]]",
+        }
+        result = _apply_wikilink("Alice, Bob, Carol", links)
+        assert "[[Alice]]" in result
+        assert "[[Bob]]" in result
+        assert "Carol" in result  # unlinked name preserved as-is
+
+    def test_multi_performer_ampersand_separator(self):
+        links = {"alice": "[[Alice]]", "bob": "[[Bob]]"}
+        result = _apply_wikilink("Alice & Bob", links)
+        assert "[[Alice]]" in result
+        assert "[[Bob]]" in result
+
+    def test_multi_performer_mixed_separators(self):
+        links = {
+            "jenniferwhite": "[[Jennifer White (actress)|Jennifer White]]",
+            "annaclaireclouds": "[[Anna Claire Clouds]]",
+            "jewelzblu": "[[Jewelz Blu]]",
+        }
+        result = _apply_wikilink(
+            "Jennifer White, Anna Claire Clouds, Blake Blossom & Jewelz Blu", links)
+        assert "[[Jennifer White (actress)|Jennifer White]]" in result
+        assert "[[Anna Claire Clouds]]" in result
+        assert "Blake Blossom" in result   # no link — kept plain
+        assert "[[Jewelz Blu]]" in result
+
+    def test_multi_performer_no_links_returns_unchanged(self):
+        links = {"unrelated": "[[Unrelated]]"}
+        original = "Alice, Bob & Carol"
+        assert _apply_wikilink(original, links) == original
+
+    def test_single_name_without_separators_unchanged_when_no_match(self):
+        # Should not attempt splitting for a name with no , or &
+        links = {"alice": "[[Alice]]"}
+        assert _apply_wikilink("Bob", links) == "Bob"
+
 
 class TestValidateWikipediaArticle:
     def test_passes_when_year_present(self):
