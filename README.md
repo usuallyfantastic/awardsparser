@@ -12,7 +12,7 @@ A command-line tool that generates Wikipedia-style award tables for the AVN Awar
 ```bash
 python3 -m venv .venv
 source .venv/bin/activate      # Windows: .venv\Scripts\activate
-pip install playwright beautifulsoup4
+pip install -r requirements.txt
 playwright install chromium
 ```
 
@@ -119,3 +119,26 @@ The tool produces a Wikipedia wikitable with two award categories per row. Each 
 | `--update-url URL` | Override the auto-computed Wikipedia URL for `--update` (use when the ceremony was skipped or renumbered) |
 | `--output FILE` / `-o FILE` | Write output to a file instead of stdout |
 | `--show NAME` | Award show name (default: `AVN Awards`) |
+
+## Development
+
+### Running tests
+
+```bash
+pip install -r requirements-dev.txt
+pytest tests/ -v
+```
+
+The suite has 135 tests split across:
+
+- **`tests/unit/`** — isolated tests for every helper and parsing function (`_clean`, `_normalize`, `_parse_performer_and_title`, `_split_nominees_paragraph`, `_format_entry`, `generate_wikitext`, `extract_wikilinks`, etc.)
+- **`tests/integration/`** — full parse → merge → generate pipeline tests using local HTML fixtures; no network or browser required
+
+### CI
+
+GitHub Actions runs the full test suite on every push and pull request to `main`. See [`.github/workflows/tests.yml`](.github/workflows/tests.yml).
+
+### Known limitations
+
+- **Actor/director categories** whose nominees are listed without clear per-entry delimiters (e.g. Best Directing Portfolio) may produce concatenated nominee strings. The parser handles the most common AVN page patterns (`<strong>`-separated titles, `<br/>`-separated names) but cannot recover structure that isn't present in the source HTML.
+- The year → ceremony number formula (`year − 1983`) assumes no ceremonies were skipped. Use `--update-url` to override if needed.
