@@ -9,6 +9,7 @@ Usage:
 
 import argparse
 import json
+import os
 import re
 import sys
 import urllib.parse
@@ -424,7 +425,28 @@ def _nominee_matches_winner(nominee: Nominee, winner: Nominee) -> bool:
     return False
 
 def _wiki_escape(text: str) -> str:
-    return text.replace("|", "{{!}}")
+    """
+    Escape bare pipe characters for use in wikitable cells.
+
+    Pipes that are part of [[Article|Display]] wikilinks are valid wiki syntax
+    and must NOT be escaped.  Only bare pipes (which would break table cell
+    parsing) need replacing with {{!}}.
+    """
+    result: list[str] = []
+    i = 0
+    while i < len(text):
+        if text[i:i+2] == '[[':
+            end = text.find(']]', i + 2)
+            if end != -1:
+                result.append(text[i:end + 2])
+                i = end + 2
+                continue
+        if text[i] == '|':
+            result.append('{{!}}')
+        else:
+            result.append(text[i])
+        i += 1
+    return ''.join(result)
 
 
 # ---------------------------------------------------------------------------
@@ -631,8 +653,434 @@ def generate_wikitext(categories: list[Category], show_name: str = "AVN Awards",
 
 
 # ---------------------------------------------------------------------------
+# Feature 1 — "Films with multiple nominations and awards" section
+#
+# Mirrors the format on https://en.wikipedia.org/wiki/98th_Academy_Awards
+# Two side-by-side {{col-begin}} wikitables: nominations count and wins count.
+# ---------------------------------------------------------------------------
+
+def _extract_film_key(n: Nominee) -> Optional[str]:
+    """
+    Extract the film/title identifier from a nominee entry for counting.
+
+    Priority:
+    1. Quoted title in detail field → that is the scene/film title.
+    2. Name that looks like a film title (no comma, no ' and ') → use name.
+    Otherwise return None (can't confidently identify a film).
+    """
+    if n.detail:
+        m = re.match(r'^"(.+?)"', n.detail)
+        if m:
+            return m.group(1)
+    if n.name and ',' not in n.name and ' and ' not in n.name.lower():
+        return n.name
+    return None
+
+
+def _make_count_table(caption: str, col_header: str,
+                       entries: list[tuple[str, int]],
+                       wl: dict[str, str]) -> list[str]:
+    """Build a wikitable mapping count → film title (with rowspan for ties)."""
+    lines = [
+        '{| class="wikitable plainrowheaders" style="text-align: center; margin-right:1em;"',
+        f'|+ {caption}',
+        '|-',
+        f'! scope="col" style="width:55px;"| {col_header}',
+        '! scope="col" style="text-align:center;"| Film',
+    ]
+    i = 0
+    while i < len(entries):
+        count = entries[i][1]
+        group: list[str] = []
+        while i < len(entries) and entries[i][1] == count:
+            group.append(entries[i][0])
+            i += 1
+        for k, title in enumerate(group):
+            lines.append('|-')
+            if k == 0:
+                span = f' rowspan="{len(group)}"' if len(group) > 1 else ''
+                lines.append(f'| scope="row"{span}| {count}')
+            linked = _apply_wikilink(title, wl)
+            lines.append(f"| ''{_wiki_escape(linked)}''")
+    lines.append('|}')
+    return lines
+
+
+def generate_multi_nominations_table(
+        categories: list[Category],
+        wikilinks: Optional[dict[str, str]] = None) -> str:
+    """
+    Generate a "Films with multiple nominations and awards" section.
+
+    Each film/title is counted once per category even if it appears multiple
+    times in the same category's nominee list.
+    """
+    wl = wikilinks or {}
+    nom_counts: dict[str, int] = {}
+    win_counts: dict[str, int] = {}
+
+    for cat in categories:
+        seen: set[str] = set()
+        for n in cat.nominees:
+            film = _extract_film_key(n)
+            if film and film not in seen:
+                nom_counts[film] = nom_counts.get(film, 0) + 1
+                seen.add(film)
+        if cat.winner:
+            film = _extract_film_key(cat.winner)
+            if film:
+                win_counts[film] = win_counts.get(film, 0) + 1
+
+    multi_noms = sorted(
+        ((k, v) for k, v in nom_counts.items() if v >= 2),
+        key=lambda x: (-x[1], x[0]),
+    )
+    multi_wins = sorted(
+        ((k, v) for k, v in win_counts.items() if v >= 2),
+        key=lambda x: (-x[1], x[0]),
+    )
+
+    lines: list[str] = [
+        "== Films with multiple nominations and awards ==",
+        "{{col-begin|width=70%}}",
+        "{{col-1-of-2}}",
+        "",
+    ]
+    lines += _make_count_table(
+        "Films with multiple nominations", "Nominations", multi_noms, wl)
+    lines += ["", "{{col-2-of-2}}", ""]
+    lines += _make_count_table(
+        "Films with multiple wins", "Awards", multi_wins, wl)
+    lines += ["", "{{col-end}}"]
+    return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# Feature 2 — Main AVN Awards page: new year column
+#
+# The AVN Awards article has a horizontal wikitable with years as columns and
+# award categories as rows.  This generates the cell values for a new year so
+# they can be pasted into the Wikipedia table editor.
+# ---------------------------------------------------------------------------
+
+# Category order as it appears in the current (2025–) table on the main page.
+# Display names must match the row-header text on Wikipedia exactly.
+MAIN_PAGE_CATEGORIES: list[str] = [
+    "Best New Starlet",
+    "Female Performer of the Year",
+    "Male Performer of the Year",
+    "Trans Performer of the Year",
+    "Best Male Newcomer",
+    "Best Actress – Featurette",
+    "Best Actor – Featurette",
+    "Best Leading Actress",
+    "Best Leading Actor",
+    "Best Supporting Actress",
+    "Best Supporting Actor",
+    "International Female Performer of the Year",
+    "International Male Performer of the Year",
+    "Outstanding Directing - Individual Work",
+    "Best Directing Portfolio – Narrative",
+    "Best Directing Portfolio – Non-Narrative",
+    "Best Directing Portfolio – International",
+    "Best Boy/Girl Sex Scene",
+    "Best Girl/Girl Sex Scene",
+    "Best All-Girl Group Sex Scene",
+    "Most Outrageous Sex Scene",
+    "MILF Performer of the Year",
+    "Best All-Girl Series or Free-Form Line",
+    "Best MILF/Female Mixed-Age Series or Free-Form Line",
+    "Best International Production",
+    "Mark Stone Award for Outstanding Comedy",
+    "Best Web Retail Store",
+]
+
+
+def _format_main_page_cell(winner: Optional[Nominee],
+                            wl: dict[str, str]) -> str:
+    """
+    Format a winner as a cell for the AVN Awards main-page horizontal table.
+
+    Uses {{spaced ndash}} (Wikipedia's convention for that table) rather than
+    the literal em-dash used in ceremony tables.
+
+    e.g. [[Kira Noir]]{{spaced ndash}} ''Machine Gunner''
+    """
+    if not winner:
+        return "''TBA''"
+    raw_name = _apply_wikilink(winner.name, wl)
+    name_part = _wiki_escape(raw_name)
+    if winner.detail:
+        m = re.match(r'^"(.+?)"(.*)', winner.detail)
+        if m:
+            inner = m.group(1)
+            linked = _apply_wikilink(inner, wl)
+            film_part = f"''{_wiki_escape(linked)}''"
+            rest = re.sub(r'^[\s|,–\-]+', '', m.group(2)).strip()
+            detail_str = film_part + (f", {_wiki_escape(rest)}" if rest else "")
+        else:
+            linked_d = _apply_wikilink(winner.detail, wl)
+            detail_str = f"''{_wiki_escape(linked_d)}''"
+        return f"{name_part}{{{{spaced ndash}}}} {detail_str}"
+    return name_part
+
+
+def generate_main_page_column(
+        categories: list[Category],
+        year: int,
+        wikilinks: Optional[dict[str, str]] = None) -> str:
+    """
+    Generate the cell content for the new year's column on the AVN Awards
+    main Wikipedia page.
+
+    Output is an annotated wikitext block: one cell per table row, in the
+    same order as MAIN_PAGE_CATEGORIES, ready to paste into the editor.
+    """
+    wl = wikilinks or {}
+    ceremony_title = _avn_wikipedia_title(year)
+
+    # Build lookup: normalized name → Category
+    cat_map: dict[str, Category] = {_normalize(c.name): c for c in categories}
+
+    def _find_cat(display: str) -> Optional[Category]:
+        key = _normalize(display)
+        if key in cat_map:
+            return cat_map[key]
+        return next(
+            (c for nk, c in cat_map.items() if key in nk or nk in key),
+            None,
+        )
+
+    lines: list[str] = [
+        f"<!-- ================================================================",
+        f"     New column for [[AVN Awards]] table — {year} ({ceremony_title})",
+        f"     Add the following header to the year row:",
+        f"     ![[{ceremony_title}|{year}]]",
+        f"     Then add these cells in order (one per category row):",
+        f"     ================================================================ -->",
+    ]
+    for display_name in MAIN_PAGE_CATEGORIES:
+        cat = _find_cat(display_name)
+        winner = cat.winner if cat else None
+        cell = _format_main_page_cell(winner, wl)
+        lines += [
+            f"<!-- {display_name} -->",
+            f"|{cell}",
+        ]
+
+    return "\n".join(lines)
+
+
+# ---------------------------------------------------------------------------
+# Feature 3 — Per-category Wikipedia pages
+#
+# Nine AVN award categories have their own Wikipedia articles.  This feature
+# fetches each article, appends a new row for the current year, and writes
+# the full updated wikitext so it can be pasted into the Wikipedia editor.
+#
+# Row format (matching AVN Award for Best Actress etc.):
+#   |-
+#   |rowspan=N|YEAR<ref>…</ref>
+#   |rowspan=N align=center|                  ← photo (left blank)
+#   |rowspan=N align=center|'''[[Winner]]'''<br>{{small|'''''Film'''''}}
+#   |align=center|Nominee<br>{{small|''Film''}}
+#   |-
+#   |align=center|Nominee 2<br>{{small|''Film''}}
+#   …
+# ---------------------------------------------------------------------------
+
+# Normalized category name → Wikipedia article title.
+# Keys are produced by _normalize() applied to the display name.
+CATEGORY_ARTICLE_MAP: dict[str, str] = {
+    "bestactor":                        "AVN Award for Best Actor",
+    "bestactress":                      "AVN Award for Best Actress",
+    "bestsupportingactor":              "AVN Award for Best Supporting Actor",
+    "bestsupportingactress":            "AVN Award for Best Supporting Actress",
+    "maleperformeroftheyear":           "AVN Award for Male Performer of the Year",
+    "femaleperformeroftheyear":         "AVN Award for Female Performer of the Year",
+    "maleforeignperformeroftheyear":    "AVN Award for Male Foreign Performer of the Year",
+    "femaleforeignperformeroftheyear":  "AVN Award for Female Foreign Performer of the Year",
+    "transgenderperformeroftheyear":    "AVN Award for Transgender Performer of the Year",
+}
+
+# Aliases for names the AVN nominees page uses that differ from Wikipedia row headers.
+CATEGORY_ARTICLE_ALIASES: dict[str, str] = {
+    "internationalmaleperformeroftheyear":      "AVN Award for Male Foreign Performer of the Year",
+    "internationalfemaleperformeroftheyear":    "AVN Award for Female Foreign Performer of the Year",
+    "transperformeroftheyear":                  "AVN Award for Transgender Performer of the Year",
+    "femaleperformeroftheyearaward":            "AVN Award for Female Performer of the Year",
+}
+
+# Combined lookup used by the CLI
+_ALL_CATEGORY_MAPS: dict[str, str] = {**CATEGORY_ARTICLE_MAP, **CATEGORY_ARTICLE_ALIASES}
+
+
+def _format_category_page_row(
+        year: int,
+        winner: Optional[Nominee],
+        other_nominees: list[Nominee],
+        wikilinks: Optional[dict[str, str]] = None,
+        nominees_url: str = "",
+        winners_url: str = "") -> str:
+    """
+    Format a new row block for a per-category Wikipedia article.
+    The rowspan equals the number of other nominees (≥1).
+    """
+    wl = wikilinks or {}
+    n_rows = max(len(other_nominees), 1)
+
+    # Build <ref> block
+    refs_parts: list[str] = []
+    if nominees_url:
+        refs_parts.append(
+            f'{{{{Cite web|title={year} AVN Award Nominees Announced'
+            f'|url={nominees_url}|website=[[AVN (magazine)|AVN]]}}}}'
+        )
+    if winners_url:
+        refs_parts.append(
+            f'{{{{Cite web|title={year} AVN Award Winners Announced'
+            f'|url={winners_url}|website=[[AVN (magazine)|AVN]]}}}}'
+        )
+    refs = "".join(f"<ref>{r}</ref>" for r in refs_parts)
+
+    def _winner_fmt(w: Nominee) -> str:
+        raw_name = _apply_wikilink(w.name, wl)
+        name = f"'''{ _wiki_escape(raw_name) }'''"
+        if w.detail:
+            m = re.match(r'^"(.+?)"', w.detail)
+            film_raw = m.group(1) if m else w.detail
+            linked = _apply_wikilink(film_raw, wl)
+            film_cell = "{{small|" + "'''''" + _wiki_escape(linked) + "'''''" + "}}"
+            return name + "<br>" + film_cell
+        return name
+
+    def _nom_fmt(n: Nominee) -> str:
+        raw_name = _apply_wikilink(n.name, wl)
+        name = _wiki_escape(raw_name)
+        if n.detail:
+            m = re.match(r'^"(.+?)"', n.detail)
+            film_raw = m.group(1) if m else n.detail
+            linked = _apply_wikilink(film_raw, wl)
+            film_cell = "{{small|" + "''" + _wiki_escape(linked) + "''" + "}}"
+            return name + "<br>" + film_cell
+        return name
+
+    rs = f"rowspan={n_rows} " if n_rows > 1 else ""
+    winner_content = _winner_fmt(winner) if winner else "''TBA''"
+
+    rows: list[str] = ['|-']
+    rows.append(f"|{rs}|{year}{refs}")
+    rows.append(f"|{rs}align=center|")
+    rows.append(f"|{rs}align=center|{winner_content}")
+
+    first_nom = other_nominees[0] if other_nominees else None
+    rows.append(f"|align=center|{_nom_fmt(first_nom)}" if first_nom else "|align=center|")
+
+    for nom in other_nominees[1:]:
+        rows.append('|-')
+        rows.append(f"|align=center|{_nom_fmt(nom)}")
+
+    return "\n".join(rows)
+
+
+def _insert_row_before_table_end(wikitext: str, new_row: str) -> str:
+    """Insert new_row wikitext before the last |} line in the article."""
+    lines = wikitext.split('\n')
+    for i in range(len(lines) - 1, -1, -1):
+        if re.match(r'^\s*\|}\s*$', lines[i]):
+            lines.insert(i, new_row)
+            return '\n'.join(lines)
+    return wikitext + '\n' + new_row
+
+
+def generate_category_page_update(
+        article_title: str,
+        cat: Category,
+        year: int,
+        wikilinks: Optional[dict[str, str]] = None,
+        nominees_url: str = "",
+        winners_url: str = "") -> str:
+    """
+    Fetch the existing Wikipedia article for a per-category page, append the
+    new year's row, and return the complete updated wikitext.
+    """
+    print(f"[*]   Fetching '{article_title}' …", file=sys.stderr)
+    existing = fetch_wikipedia_wikitext(article_title)
+    if not existing:
+        print(f"[!]   Could not fetch '{article_title}' — skipping.", file=sys.stderr)
+        return ""
+
+    wl = wikilinks or {}
+    winner = cat.winner
+    others = [n for n in cat.nominees
+              if winner is None or not _nominee_matches_winner(n, winner)]
+
+    new_row = _format_category_page_row(
+        year=year,
+        winner=winner,
+        other_nominees=others,
+        wikilinks=wl,
+        nominees_url=nominees_url,
+        winners_url=winners_url,
+    )
+    return _insert_row_before_table_end(existing, new_row)
+
+
+# ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
+
+def _write_all_outputs(
+        output_dir: str,
+        ceremony_wikitext: str,
+        categories: list[Category],
+        year: int,
+        wikilinks: dict[str, str],
+        nominees_url: str,
+        winners_url: str) -> None:
+    """Write all Wikipedia page outputs to output_dir."""
+    os.makedirs(output_dir, exist_ok=True)
+
+    def _write(filename: str, text: str) -> None:
+        path = os.path.join(output_dir, filename)
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(text)
+        print(f"[*]   {filename}", file=sys.stderr)
+
+    print(f"[*] Writing outputs to {output_dir}/", file=sys.stderr)
+
+    # 1. Main ceremony table (same as --output mode)
+    _write("ceremony.wiki", ceremony_wikitext)
+
+    # 2. Films with multiple nominations and awards
+    _write("multi_noms.wiki",
+           generate_multi_nominations_table(categories, wikilinks=wikilinks))
+
+    # 3. New year column for the AVN Awards main page
+    _write("main_page_column.wiki",
+           generate_main_page_column(categories, year, wikilinks=wikilinks))
+
+    # 4. Per-category Wikipedia page updates
+    written = 0
+    for cat in categories:
+        article_title = _ALL_CATEGORY_MAPS.get(_normalize(cat.name))
+        if not article_title:
+            continue
+        slug = re.sub(r'[^a-z0-9]+', '_', article_title.lower()).strip('_')
+        updated = generate_category_page_update(
+            article_title=article_title,
+            cat=cat,
+            year=year,
+            wikilinks=wikilinks,
+            nominees_url=nominees_url,
+            winners_url=winners_url,
+        )
+        if updated:
+            _write(f"{slug}.wiki", updated)
+            written += 1
+
+    print(f"[*] Done — {written} category page(s) updated.", file=sys.stderr)
+
 
 def main():
     parser = argparse.ArgumentParser(
@@ -658,6 +1106,14 @@ def main():
             "number formula is wrong (e.g. due to a skipped year)."
         ),
     )
+    parser.add_argument(
+        "--output-dir", metavar="DIR",
+        help=(
+            "Write all Wikipedia page outputs to a directory. Generates: "
+            "ceremony.wiki, multi_noms.wiki, main_page_column.wiki, and one "
+            "<article>.wiki per linked category page. Requires --update YEAR."
+        ),
+    )
     args = parser.parse_args()
 
     if not args.nominees and not args.winners:
@@ -665,6 +1121,8 @@ def main():
 
     if args.update_url and not args.update:
         parser.error("--update-url requires --update YEAR.")
+    if args.output_dir and not args.update:
+        parser.error("--output-dir requires --update YEAR.")
 
     # ------------------------------------------------------------------
     # Optionally harvest existing wikilinks from the Wikipedia article
@@ -735,7 +1193,17 @@ def main():
 
     wikitext = generate_wikitext(categories, show_name=args.show, wikilinks=wikilinks)
 
-    if args.output:
+    if args.output_dir:
+        _write_all_outputs(
+            output_dir=args.output_dir,
+            ceremony_wikitext=wikitext,
+            categories=categories,
+            year=args.update,
+            wikilinks=wikilinks,
+            nominees_url=args.nominees or "",
+            winners_url=args.winners or "",
+        )
+    elif args.output:
         with open(args.output, "w", encoding="utf-8") as f:
             f.write(wikitext)
         print(f"[*] Written to {args.output}", file=sys.stderr)
