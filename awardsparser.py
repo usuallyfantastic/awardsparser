@@ -414,8 +414,12 @@ def _nominee_matches_winner(nominee: Nominee, winner: Nominee) -> bool:
     # Substring: one name contains the other (scene title vs full entry)
     if nn and (nn in wn or wn in nn):
         return True
-    # Cross-check: nominee name appears in winner detail or vice versa
-    if nn and nd and (nn in wd or nd in wn):
+    # Cross-check: nominee name appears in winner detail (e.g. nominee is just
+    # the scene title, winner entry has both performers and scene title)
+    if nn and wd and nn in wd:
+        return True
+    # Or nominee detail appears in winner name
+    if nd and wn and nd in wn:
         return True
     return False
 
@@ -542,33 +546,34 @@ def _format_entry(n: Nominee, bold: bool = False,
     Wikipedia link from the --update page is wrapped in [[…]] markup.
     """
     wl = wikilinks or {}
-    raw_name = n.name
-    name = _wiki_escape(_apply_wikilink(raw_name, wl))
-    detail = _wiki_escape(n.detail) if n.detail else ""
+
+    # Work on raw (unescaped) strings so separator-stripping logic sees the
+    # original characters; wiki-escape only at the very end.
+    raw_name = _apply_wikilink(n.name, wl)
+    raw_detail = n.detail or ""
 
     if bold:
-        name = f"'''{name}'''"
-    if detail:
-        # Scene/film title in italics, rest plain
-        # Try to split quoted title from trailing studio info
-        m = re.match(r'^(".*?")(.*)', detail)
+        display_name = f"'''{_wiki_escape(raw_name)}'''"
+    else:
+        display_name = _wiki_escape(raw_name)
+
+    if raw_detail:
+        # Scene/film title in italics, rest plain.
+        # Try to split a quoted title from trailing studio info.
+        m = re.match(r'^(".*?")(.*)', raw_detail)
         if m:
             quoted_title = m.group(1)
-            # Check wikilinks against the title text without quotes
             inner = quoted_title.strip('"')
             linked_title = _apply_wikilink(inner, wl)
-            if linked_title != inner:
-                title_part = f"''{_wiki_escape(linked_title)}''"
-            else:
-                title_part = f"''{_wiki_escape(quoted_title)}''"
+            title_part = f"''{_wiki_escape(linked_title if linked_title != inner else quoted_title)}''"
             # Strip any leading separator (| – - ,) left over from the source
             rest = re.sub(r'^[\s|,–\-]+', '', m.group(2)).strip()
-            detail_fmt = title_part + (f", {rest}" if rest else "")
+            detail_fmt = title_part + (f", {_wiki_escape(rest)}" if rest else "")
         else:
-            detail_fmt = f"''{_wiki_escape(_apply_wikilink(detail, wl))}''"
-        line = f"{name} – {detail_fmt}"
+            detail_fmt = f"''{_wiki_escape(_apply_wikilink(raw_detail, wl))}''"
+        line = f"{display_name} – {detail_fmt}"
     else:
-        line = name
+        line = display_name
 
     return line
 

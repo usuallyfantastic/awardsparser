@@ -1,0 +1,19 @@
+{{Infobox television
+| name = 43rd AVN Awards
+| year = 2026
+}}
+
+The '''43rd AVN Awards''' ceremony took place in 2026.
+
+==Nominees and winners==
+
+{| class="wikitable"
+|-
+| style="width:50%;" | {{Award category|#89cff0|Grand Reel}}
+* [[Alpha Film]] – ''Studio One''
+** [[Beta Film]] – ''Studio Two''
+| style="width:50%;" | {{Award category|#89cff0|Best Boy/Girl Sex Scene}}
+* [[Alice]] & Bob, "Scene One" – ''Series A, Studio X''
+|}
+
+[[Category:AVN Awards]]
