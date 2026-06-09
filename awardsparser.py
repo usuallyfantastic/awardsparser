@@ -8,8 +8,11 @@ Usage:
 """
 
 import argparse
+import json
 import re
 import sys
+import urllib.parse
+import urllib.request
 from dataclasses import dataclass, field
 from itertools import groupby
 from typing import Optional
@@ -420,16 +423,93 @@ def _wiki_escape(text: str) -> str:
     return text.replace("|", "{{!}}")
 
 
+# ---------------------------------------------------------------------------
+# Wikipedia wikilink extraction  (for --update)
+# ---------------------------------------------------------------------------
+
+def _ordinal(n: int) -> str:
+    """Return the ordinal string for n, e.g. 43 → '43rd'."""
+    if 11 <= (n % 100) <= 13:
+        suffix = "th"
+    else:
+        suffix = {1: "st", 2: "nd", 3: "rd"}.get(n % 10, "th")
+    return f"{n}{suffix}"
+
+
+def _avn_wikipedia_title(year: int) -> str:
+    """
+    Map a ceremony year to its Wikipedia article title.
+    2026 → '43rd AVN Awards'  (year - 1983 = ceremony number)
+    """
+    number = year - 1983
+    return f"{_ordinal(number)} AVN Awards"
+
+
+def fetch_wikipedia_wikitext(title: str) -> str:
+    """Fetch the raw wikitext of a Wikipedia article via the MediaWiki API."""
+    encoded = urllib.parse.quote(title.replace(" ", "_"))
+    url = (
+        "https://en.wikipedia.org/w/api.php"
+        f"?action=query&titles={encoded}&prop=revisions"
+        "&rvprop=content&rvslots=main&format=json"
+    )
+    req = urllib.request.Request(url, headers={"User-Agent": "awardsparser/1.0"})
+    with urllib.request.urlopen(req, timeout=15) as resp:
+        data = json.loads(resp.read().decode())
+    pages = data["query"]["pages"]
+    page = next(iter(pages.values()))
+    if "missing" in page:
+        return ""
+    return page["revisions"][0]["slots"]["main"]["*"]
+
+
+def extract_wikilinks(wikitext: str) -> dict[str, str]:
+    """
+    Return a dict mapping normalized display text → full wikilink markup.
+
+    For [[Article]]          →  key=normalize("Article"),  value="[[Article]]"
+    For [[Article|Display]]  →  key=normalize("Display"),  value="[[Article|Display]]"
+
+    Only links whose display text looks like a person/title name are kept
+    (skip File:, Category:, Template: etc.).
+    """
+    links: dict[str, str] = {}
+    for m in re.finditer(r'\[\[([^\[\]]+)\]\]', wikitext):
+        inner = m.group(1)
+        if ":" in inner.split("|")[0]:   # skip File:, Category:, etc.
+            continue
+        parts = inner.split("|", 1)
+        article = parts[0].strip()
+        display = parts[1].strip() if len(parts) == 2 else article
+        key = _normalize(display)
+        if key:
+            links[key] = f"[[{inner}]]"
+    return links
+
+
+# ---------------------------------------------------------------------------
 # Header color matching the AVN Awards Wikipedia page
 AVN_HEADER_COLOR = "#89cff0"
 
 
-def _format_entry(n: Nominee, bold: bool = False) -> str:
+def _apply_wikilink(text: str, wikilinks: dict[str, str]) -> str:
+    """Replace `text` with its wikilink markup if one exists in the lookup."""
+    key = _normalize(text)
+    return wikilinks[key] if key in wikilinks else text
+
+
+def _format_entry(n: Nominee, bold: bool = False,
+                  wikilinks: Optional[dict[str, str]] = None) -> str:
     """
     Format a nominee entry as wikitext inline text.
     e.g. '''Tommy Pistol''' – ''Strip'', Dorcel/Pulse
+
+    If `wikilinks` is provided, any name/title that matches an existing
+    Wikipedia link from the --update page is wrapped in [[…]] markup.
     """
-    name = _wiki_escape(n.name)
+    wl = wikilinks or {}
+    raw_name = n.name
+    name = _wiki_escape(_apply_wikilink(raw_name, wl))
     detail = _wiki_escape(n.detail) if n.detail else ""
 
     if bold:
@@ -439,12 +519,19 @@ def _format_entry(n: Nominee, bold: bool = False) -> str:
         # Try to split quoted title from trailing studio info
         m = re.match(r'^(".*?")(.*)', detail)
         if m:
-            title_part = f"''{_wiki_escape(m.group(1))}''"
+            quoted_title = m.group(1)
+            # Check wikilinks against the title text without quotes
+            inner = quoted_title.strip('"')
+            linked_title = _apply_wikilink(inner, wl)
+            if linked_title != inner:
+                title_part = f"''{_wiki_escape(linked_title)}''"
+            else:
+                title_part = f"''{_wiki_escape(quoted_title)}''"
             # Strip any leading separator (| – - ,) left over from the source
             rest = re.sub(r'^[\s|,–\-]+', '', m.group(2)).strip()
             detail_fmt = title_part + (f", {rest}" if rest else "")
         else:
-            detail_fmt = f"''{detail}''"
+            detail_fmt = f"''{_wiki_escape(_apply_wikilink(detail, wl))}''"
         line = f"{name} – {detail_fmt}"
     else:
         line = name
@@ -453,17 +540,19 @@ def _format_entry(n: Nominee, bold: bool = False) -> str:
 
 
 def generate_wikitext(categories: list[Category], show_name: str = "AVN Awards",
-                      header_color: str = AVN_HEADER_COLOR) -> str:
+                      header_color: str = AVN_HEADER_COLOR,
+                      wikilinks: Optional[dict[str, str]] = None) -> str:
     """
-    Produces Wikipedia-style two-column wikitable output:
-      Left column:  {{Award category|color|Name}}
-      Right column: * '''Winner''' – ''Film'', Studio ‡
-                    ** Nominee 2 – ''Film'', Studio
-                    ** Nominee 3 – ''Film'', Studio
+    Produces Wikipedia-style two-column wikitable output.
+
+    If `wikilinks` is provided (populated via --update), any name or title
+    that matches an existing [[wikilink]] on the Wikipedia page is
+    preserved/inserted into the output automatically.
     """
     if not categories:
         return "<!-- No categories found -->"
 
+    wl = wikilinks or {}
     has_winners = any(c.winner for c in categories)
     has_nominees = any(len(c.nominees) > 1 for c in categories)
 
@@ -483,16 +572,16 @@ def generate_wikitext(categories: list[Category], show_name: str = "AVN Awards",
                 # Category header and nominees list in the SAME cell
                 cell = f'| style="width:50%; vertical-align:top;" | {{{{Award category|{header_color}|{cat_name}}}}}\n'
                 if has_winners and cat.winner:
-                    winner_line = _format_entry(cat.winner, bold=True)
+                    winner_line = _format_entry(cat.winner, bold=True, wikilinks=wl)
                     cell += f"* {winner_line}\n"
                     if has_nominees:
                         others = [n for n in cat.nominees
                                   if not _nominee_matches_winner(n, cat.winner)]
                         for n in others:
-                            cell += f"** {_format_entry(n)}\n"
+                            cell += f"** {_format_entry(n, wikilinks=wl)}\n"
                 elif has_nominees:
                     for n in cat.nominees:
-                        cell += f"* {_format_entry(n)}\n"
+                        cell += f"* {_format_entry(n, wikilinks=wl)}\n"
                 else:
                     cell += "''TBA''\n"
                 lines.append(cell.rstrip())
@@ -514,10 +603,32 @@ def main():
     parser.add_argument("--winners", help="URL of the winners announcement page")
     parser.add_argument("--output", "-o", help="Output file (default: stdout)")
     parser.add_argument("--show", default="AVN Awards", help="Award show name")
+    parser.add_argument(
+        "--update", metavar="YEAR", type=int,
+        help=(
+            "Fetch the existing Wikipedia article for this ceremony year "
+            "(e.g. 2026 → '43rd AVN Awards') and preserve any [[wikilinks]] "
+            "already present there in the generated output."
+        ),
+    )
     args = parser.parse_args()
 
     if not args.nominees and not args.winners:
         parser.error("At least one of --nominees or --winners is required.")
+
+    # ------------------------------------------------------------------
+    # Optionally harvest existing wikilinks from the Wikipedia article
+    # ------------------------------------------------------------------
+    wikilinks: dict[str, str] = {}
+    if args.update:
+        title = _avn_wikipedia_title(args.update)
+        print(f"[*] Fetching existing Wikipedia article: '{title}'", file=sys.stderr)
+        wikitext_existing = fetch_wikipedia_wikitext(title)
+        if wikitext_existing:
+            wikilinks = extract_wikilinks(wikitext_existing)
+            print(f"[*] Extracted {len(wikilinks)} wikilinks from existing article.", file=sys.stderr)
+        else:
+            print(f"[!] Article '{title}' not found on Wikipedia — skipping wikilink extraction.", file=sys.stderr)
 
     categories: list[Category] = []
 
@@ -548,7 +659,7 @@ def main():
         else:
             categories = winner_cats
 
-    wikitext = generate_wikitext(categories, show_name=args.show)
+    wikitext = generate_wikitext(categories, show_name=args.show, wikilinks=wikilinks)
 
     if args.output:
         with open(args.output, "w", encoding="utf-8") as f:
