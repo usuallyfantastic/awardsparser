@@ -1,0 +1,5 @@
+.venv/
+__pycache__/
+*.pyc
+*.pyo
+nominees_debug.html
