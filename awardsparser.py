@@ -1053,7 +1053,7 @@ def _write_all_outputs(
     _write("ceremony.wiki", ceremony_wikitext)
 
     # 2. Films with multiple nominations and awards
-    _write("multi_noms.wiki",
+    _write("multi_noms_and_wins.wiki",
            generate_multi_nominations_table(categories, wikilinks=wikilinks))
 
     # 3. New year column for the AVN Awards main page
